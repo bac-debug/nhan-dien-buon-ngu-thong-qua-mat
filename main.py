@@ -19,10 +19,10 @@ if platform.system() == "Windows":
 
 app = Flask(__name__)
 
-stream_url = 'http://192.168.137.44:4747/video/'
+stream_url = 'http://192.168.137.173:4747/video/'
 cap = cv2.VideoCapture(stream_url)
 cap.set(cv2.CAP_PROP_BUFFERSIZE, 2)
-
+#Nạp bộ phát hiện khuôn mặt và mắt
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
 
@@ -32,7 +32,7 @@ video_frame = None
 lock = Lock()
 capture_path = "captured_images"
 os.makedirs(capture_path, exist_ok=True)
-
+#Cấu hình hệ thống
 EYE_CLOSED_DURATION_THRESHOLD = 2
 EYE_PIXEL_THRESHOLD = 15
 closed_start_time = None
@@ -108,6 +108,14 @@ def reconnect_camera():
     time.sleep(2)
     cap = cv2.VideoCapture(stream_url)
 
+def draw_text_vietnamese(img, text, position, color=(0, 255, 0), font_size=16):
+    """Hàm vẽ chữ hỗ trợ tiếng Việt với kích thước font có thể thay đổi."""
+    pil_img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+    draw = ImageDraw.Draw(pil_img)
+    font = ImageFont.truetype(FONT_PATH, font_size)  # 🔥 Thêm font_size vào đây
+    draw.text(position, text, font=font, fill=color)
+    return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+
 def camera_stream():
     global video_frame, closed_start_time
     while True:
@@ -121,79 +129,67 @@ def camera_stream():
         frame = cv2.resize(frame, (width, height))
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         faces = face_cascade.detectMultiScale(gray, scaleFactor=1.3, minNeighbors=5)
-        
-        eye_closed = False  # Trạng thái chung của mắt
 
-        for (x, y, w, h) in faces:
-            roi_gray = gray[y:y+h, x:x+w]
-            roi_color = frame[y:y+h, x:x+w]
-            # Phát hiện mắt
-            eyes = eye_cascade.detectMultiScale(roi_gray, scaleFactor=1.1, minNeighbors=5)
-            if len(eyes) == 0:
-                # Nếu không dò được mắt nào, giả sử mắt đóng
-                eyes_detected = True
-                eye_closed = True
-                # Vẽ ước lượng vùng mắt (ở phần trên của khuôn mặt)
-                cv2.rectangle(roi_color, (int(w*0.25), int(h*0.25)), (int(w*0.75), int(h*0.5)), (0, 0, 255), 2)
-            else:
-                eyes_detected = True
-                closed_count = 0
-                for (ex, ey, ew, eh) in eyes:
-                    if eh < EYE_PIXEL_THRESHOLD:
-                        closed_count += 1
-                        cv2.rectangle(roi_color, (ex, ey), (ex+ew, ey+eh), (0, 0, 255), 2)  # Vẽ khung đỏ cho mắt đóng
-                    else:
-                        cv2.rectangle(roi_color, (ex, ey), (ex+ew, ey+eh), (0, 255, 0), 2)  # Vẽ khung xanh cho mắt mở
-                # Chỉ coi là mắt đóng nếu tất cả các mắt đều đóng
-                if len(eyes) > 0 and closed_count == len(eyes):
-                    eye_closed = True
-                else:
-                    eye_closed = False
-            # Xử lý chỉ khuôn mặt đầu tiên
-            break
-
-
-        eyes_detected = False
-        eye_closed = False  
-        show_warning = False  
+        eye_closed = False
+        show_warning = False
 
         for (x, y, w, h) in faces:
             roi_gray = gray[y:y+h, x:x+w]
             roi_color = frame[y:y+h, x:x+w]
 
+            # 📌 **Phát hiện mắt**
             eyes = eye_cascade.detectMultiScale(roi_gray, scaleFactor=1.1, minNeighbors=5)
-            if len(eyes) == 0:
-                eyes_detected = True
-                eye_closed = True
-            else:
-                eyes_detected = True
-                closed_count = sum(1 for (ex, ey, ew, eh) in eyes if eh < EYE_PIXEL_THRESHOLD)
-                eye_closed = closed_count == len(eyes)
-            break  
 
-        current_time = time.time()
-        if eyes_detected and eye_closed:
-            if closed_start_time is None:
-                closed_start_time = current_time
-            elif current_time - closed_start_time >= EYE_CLOSED_DURATION_THRESHOLD:
-                show_warning = True  
-        else:
-            closed_start_time = None
+            closed_count = 0  # Đếm số mắt nhắm
+            for (ex, ey, ew, eh) in eyes:
+                if eh < EYE_PIXEL_THRESHOLD:  
+                    closed_count += 1  
 
-        for (x, y, w, h) in faces:
+            eye_closed = closed_count == len(eyes)  
+
+            # 📌 **Xác định thời gian mắt nhắm**
+            current_time = time.time()
             if eye_closed:
-                if show_warning:
-                    frame = draw_text_vietnamese(frame, "NGUY HIỂM!", (x + 5, y - 10), (0, 0, 255))
-                    cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 0, 255), 2)
-                    sendWarning("ALO ALO ALO! Hãy tỉnh táo!")
-                    capture_image(frame)  
-                else:
-                    frame = draw_text_vietnamese(frame, "Mắt đang nhắm!", (x + 5, y - 10), (0, 0, 255))
+                if closed_start_time is None:
+                    closed_start_time = current_time  # Bắt đầu tính thời gian
+                elapsed_time = current_time - closed_start_time
+                if elapsed_time >= EYE_CLOSED_DURATION_THRESHOLD:
+                    show_warning = True  # Bật cảnh báo
             else:
-                frame = draw_text_vietnamese(frame, "Mắt đang mở!", (x + 5, y - 10), (0, 255, 0))
+                closed_start_time = None  # Reset khi mắt mở lại
+
+            # 📌 **Vẽ khung mắt dựa vào trạng thái**
+            for (ex, ey, ew, eh) in eyes:
+                eye_x, eye_y, eye_w, eye_h = x + ex, y + ey, ew, eh
+                
+                if eye_closed:
+                    if show_warning:
+                        color = (0, 0, 255)  # 🔴 **Mắt nhắm ≥ 2s → Khung đỏ**
+                    else:
+                        color = (0, 255, 255)  # 🟡 **Mắt nhắm < 2s → Khung vàng**
+                else:
+                    color = (0, 255, 0)  # ✅ **Mắt mở → Khung xanh**
+                
+                cv2.rectangle(frame, (eye_x, eye_y), (eye_x + eye_w, eye_y + eye_h), color, 2)
+
+            # 📌 **Vẽ khung mặt và cảnh báo**
+            if show_warning:  # 🔴 **Mắt nhắm quá 2s → Cảnh báo**
+                frame = draw_text_vietnamese(frame, "NGUY HIỂM!", (x + 5, y - 10), (255, 0, 0))  # 🟥 Chữ đỏ
+                cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 0, 255), 2)  # 🟥 Khung mặt đỏ
+                sendWarning("Bạn đang buồn ngủ, hãy tỉnh táo!")
+                capture_image(frame)
+            elif eye_closed:  # 🟡 **Mắt nhắm nhưng chưa quá 2s**
+                frame = draw_text_vietnamese(frame, "Mắt nhắm - Không bình thường", (x + 5, y - 10), (255, 255, 0))  # 🟡 Chữ vàng
+                cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 255), 2)  # 🟡 Khung mặt vàng
+            else:  # ✅ **Mắt mở**
+                frame = draw_text_vietnamese(frame, "Mắt mở - Bình thường", (x + 5, y - 10), (0, 255, 0))  # ✅ Chữ xanh
+                cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)  # ✅ Khung mặt xanh
+
+            break  # Chỉ xử lý khuôn mặt đầu tiên
 
         with lock:
             video_frame = frame.copy()
+
 
 def gen_frames():
     global video_frame
